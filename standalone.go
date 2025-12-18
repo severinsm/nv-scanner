@@ -78,7 +78,15 @@ func parseImageValue(value string) (string, string, string) {
 			tagOrDigest = last[i+1:]
 		} else {
 			// No tag or digest
-			tagOrDigest = "latest"
+func parseTagOrDigest(name string) (string, string) {
+    if i := strings.Index(name, "@"); i != -1 {
+        return name[:i], name[i+1:]
+    }
+    if i := strings.Index(name, ":"); i != -1 {
+        return name[:i], name[i+1:]
+    }
+    return name, "latest"
+}
 		}
 		repository = strings.Join(parts, "/")
 	}
