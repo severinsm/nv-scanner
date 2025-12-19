@@ -2,10 +2,17 @@ package main
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestImageParsing(t *testing.T) {
-	cases := [][4]string{
+	tests := []struct {
+		input      string
+		registry   string
+		repository string
+		ref        string
+	}{
 		{"alpine:3.17", "", "alpine", "3.17"},
 		{"nginx:latest", "", "nginx", "latest"},
 		{"nginx", "", "nginx", "latest"},
@@ -30,11 +37,61 @@ func TestImageParsing(t *testing.T) {
 		{"registry.hub.docker.com/test/python@sha256:aabbccdd", "https://registry.hub.docker.com", "test/python", "sha256:aabbccdd"},
 	}
 
-	for _, c := range cases {
-		reg, repo, tag := parseImageValue(c[0])
-		if reg != c[1] || repo != c[2] || tag != c[3] {
-			t.Errorf("Incorrect result: %s => got (%s, %s, %s), want (%s, %s, %s)\n",
-				c[0], reg, repo, tag, c[1], c[2], c[3])
-		}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			reg, repo, ref := parseImageValue(tt.input)
+			require.Equal(t, tt.registry, reg, "registry mismatch")
+			require.Equal(t, tt.repository, repo, "repository mismatch")
+			require.Equal(t, tt.ref, ref, "ref mismatch")
+		})
+	}
+}
+
+func TestParseTagOrDigest(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantName string
+		wantRef  string
+	}{
+		{"alpine:latest", "alpine", "latest"},
+		{"alpine", "alpine", "latest"},
+		{"myregistry.com/repo/image:1.2.3", "myregistry.com/repo/image", "1.2.3"},
+		{"repo/image@sha256:abc123", "repo/image", "sha256:abc123"},
+		{"myregistry.com/repo/image@sha256:def456", "myregistry.com/repo/image", "sha256:def456"},
+		{"image@sha256:verylongdigestwithnumbers1234567890", "image", "sha256:verylongdigestwithnumbers1234567890"},
+		{"image:", "image", ""}, // edge case: empty tag
+		{"image@", "image", ""}, // edge case: empty digest
+		{"", "", "latest"},      // edge case: empty input
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			gotName, gotRef := parseTagOrDigest(tt.input)
+			require.Equal(t, tt.wantName, gotName, "name mismatch for input %q", tt.input)
+			require.Equal(t, tt.wantRef, gotRef, "ref mismatch for input %q", tt.input)
+		})
+	}
+}
+func TestNormalizeRegistry(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"example.com", "https://example.com/"},
+		{"http://example.com", "http://example.com/"},
+		{"https://example.com", "https://example.com/"},
+		{"https://example.com/", "https://example.com/"},
+		{"http://example.com:5000", "http://example.com:5000/"},
+		{"example.com:5000", "https://example.com:5000/"},
+		{"http://exa mple.com", "http://exa mple.com/"},
+		{"https://registry.example.com/", "https://registry.example.com/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := normalizeRegistry(tt.input)
+			require.Equal(t, tt.expected, got)
+		})
 	}
 }
