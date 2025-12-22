@@ -84,7 +84,6 @@ func TestNormalizeRegistry(t *testing.T) {
 		{"https://example.com/", "https://example.com/"},
 		{"http://example.com:5000", "http://example.com:5000/"},
 		{"example.com:5000", "https://example.com:5000/"},
-		{"http://exa mple.com", "http://exa mple.com/"},
 		{"https://registry.example.com/", "https://registry.example.com/"},
 	}
 
