@@ -8,10 +8,10 @@ import (
 
 func TestImageParsing(t *testing.T) {
 	tests := []struct {
-		input      string
-		registry   string
-		repository string
-		ref        string
+		input              string
+		expectedRegistry   string
+		expectedRepository string
+		expectedRef        string
 	}{
 		{"alpine:3.17", "", "alpine", "3.17"},
 		{"nginx:latest", "", "nginx", "latest"},
@@ -40,18 +40,18 @@ func TestImageParsing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			reg, repo, ref := parseImageValue(tt.input)
-			require.Equal(t, tt.registry, reg, "registry mismatch")
-			require.Equal(t, tt.repository, repo, "repository mismatch")
-			require.Equal(t, tt.ref, ref, "ref mismatch")
+			require.Equal(t, tt.expectedRegistry, reg, "registry mismatch")
+			require.Equal(t, tt.expectedRepository, repo, "repository mismatch")
+			require.Equal(t, tt.expectedRef, ref, "ref mismatch")
 		})
 	}
 }
 
 func TestParseTagOrDigest(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantName string
-		wantRef  string
+		input        string
+		expectedName string
+		expectedRef  string
 	}{
 		{"alpine:latest", "alpine", "latest"},
 		{"alpine", "alpine", "latest"},
@@ -67,8 +67,8 @@ func TestParseTagOrDigest(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			gotName, gotRef := parseTagOrDigest(tt.input)
-			require.Equal(t, tt.wantName, gotName, "name mismatch for input %q", tt.input)
-			require.Equal(t, tt.wantRef, gotRef, "ref mismatch for input %q", tt.input)
+			require.Equal(t, tt.expectedName, gotName, "name mismatch for input %q", tt.input)
+			require.Equal(t, tt.expectedRef, gotRef, "ref mismatch for input %q", tt.input)
 		})
 	}
 }

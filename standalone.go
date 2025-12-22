@@ -40,8 +40,7 @@ type scanOnDemandReportData struct {
 
 func parseImageValue(value string) (string, string, string) {
 	var parts []string
-	var proto, registry, repository, ref string
-	// ref can be a tag or digest.
+	var proto, registry, repository, ref string // ref can be a tag or digest.
 	if i := strings.Index(value, "://"); i != -1 {
 		// The input URL includes a protocol (e.g., "http://", "https://", "docker://").
 		// We remove it to parse the rest of the URL.
