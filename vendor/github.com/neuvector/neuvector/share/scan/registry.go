@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -18,10 +19,20 @@ import (
 	"github.com/neuvector/neuvector/share/scan/registry"
 )
 
-const mediaTypeCosign = "application/vnd.dev.cosign.simplesigning.v1+json"
-const mediaTypeTotoAttestation = "application/vnd.dsse.envelope.v1+json"
-const quayRegistryURL = "https://quay.io"
-const cosignSignatureTagSuffix = ".sig"
+const (
+	mediaTypeCosign            = "application/vnd.dev.cosign.simplesigning.v1+json"
+	mediaTypeInTotoAttestation = "application/vnd.dsse.envelope.v1+json"
+	mediaTypeSPDX              = "application/spdx+json"
+	mediaTypeCycloneDX         = "application/vnd.cyclonedx+json"
+	mediaTypeHelmChart         = "application/vnd.cncf.helm.chart.v1+json"
+	quayRegistryURL            = "https://quay.io"
+	cosignSignatureTagSuffix   = ".sig"
+)
+
+var (
+	hostOS   = runtime.GOOS
+	hostArch = runtime.GOARCH
+)
 
 type RegClient struct {
 	*registry.Registry
@@ -54,6 +65,39 @@ type ImageInfo struct {
 	SignatureDigest  string
 }
 
+func isImageManifestMediaType(mt string) bool {
+	// Explicitly skip known non-image artifact types
+	switch mt {
+	case mediaTypeCosign, // Cosign signature
+		mediaTypeInTotoAttestation, // In-toto attestation
+		mediaTypeSPDX,              // SBOM (SPDX)
+		mediaTypeCycloneDX,         // SBOM (CycloneDX)
+		mediaTypeHelmChart:         // Helm Chart
+		return false
+	}
+
+	// Accept standard image manifest types
+	if mt == manifestV2.MediaTypeManifest || mt == registry.MediaTypeOCIManifest || mt == "" {
+		return true
+	}
+	return false
+}
+
+// helper: rank a platform descriptor based on how well it matches our host
+func platformRank(os, arch string) int {
+	// 0 = best, higher = worse
+	if os == hostOS && arch == hostArch {
+		return 0 // exact match (e.g. linux/arm64 on arm64 host)
+	}
+	if os == "linux" && arch == "amd64" {
+		return 1 // preferred fallback
+	}
+	if os == "linux" {
+		return 2 // other linux architectures
+	}
+	return 3 // non-linux
+}
+
 func isPotentialCosignSignatureTag(tag string) bool {
 	return (strings.HasPrefix(tag, "sha256-") && strings.HasSuffix(tag, cosignSignatureTagSuffix))
 }
@@ -66,7 +110,7 @@ func isQuayRegistry(rc *RegClient) bool {
 }
 
 func isCosignPayload(mediaType string) bool {
-	return mediaType == mediaTypeCosign || mediaType == mediaTypeTotoAttestation
+	return mediaType == mediaTypeCosign || mediaType == mediaTypeInTotoAttestation
 }
 
 func copyV2Layers(imageInfo *ImageInfo, manV2 *manifestV2.Manifest, ccmi *registry.ManifestInfo) bool {
@@ -191,24 +235,42 @@ func (rc *RegClient) GetImageInfo(ctx context.Context, name, tag string, manifes
 			if err = ml.UnmarshalJSON(body); err == nil && len(ml.Manifests) > 0 &&
 				(ml.MediaType == manifestList.MediaTypeManifestList || ml.MediaType == registry.MediaTypeOCIIndex) {
 				log.WithFields(log.Fields{"name": name, "tag": tag}).Debug("manifest request result is manifest list")
-				// prefer to scan linux/amd64 image
-				sort.Slice(ml.Manifests, func(i, j int) bool {
-					if ml.Manifests[i].Platform.OS == "linux" && ml.Manifests[i].Platform.Architecture == "amd64" {
-						return true
-					} else if ml.Manifests[j].Platform.OS == "linux" && ml.Manifests[j].Platform.Architecture == "amd64" {
-						return false
-					} else if ml.Manifests[i].Platform.OS == "linux" {
-						return true
-					} else {
-						return false
+
+				// Filter to only entries that look like image manifests (not SBOMs, signatures, attestations, etc.)
+				imageDescs := make([]manifestList.ManifestDescriptor, 0, len(ml.Manifests))
+				for _, desc := range ml.Manifests {
+					if isImageManifestMediaType(desc.MediaType) {
+						imageDescs = append(imageDescs, desc)
 					}
-				})
+				}
 
-				tag = string(ml.Manifests[0].Digest)
-				dg = tag
-				log.WithFields(log.Fields{"os": ml.Manifests[0].Platform.OS, "arch": ml.Manifests[0].Platform.Architecture, "tag": tag}).Debug("manifest list")
+				if len(imageDescs) == 0 {
+					log.WithFields(log.Fields{"name": name, "tag": tag}).Error("manifest list has no image manifests")
+					// fall through – v2SchemaError/v1 may handle
+				} else {
+					sort.Slice(imageDescs, func(i, j int) bool {
+						ri := platformRank(imageDescs[i].Platform.OS, imageDescs[i].Platform.Architecture)
+						rj := platformRank(imageDescs[j].Platform.OS, imageDescs[j].Platform.Architecture)
+						if ri != rj {
+							return ri < rj
+						}
+						// tie‑breaker: stable-ish ordering
+						return imageDescs[i].Platform.Architecture < imageDescs[j].Platform.Architecture
+					})
 
-				_, body, err = rc.ManifestRequest(ctx, name, tag, 2, manifestReqType)
+					chosen := imageDescs[0]
+					tag = string(chosen.Digest)
+					dg = tag
+					log.WithFields(log.Fields{
+						"os":        chosen.Platform.OS,
+						"arch":      chosen.Platform.Architecture,
+						"tag":       tag,
+						"host_os":   hostOS,
+						"host_arch": hostArch,
+					}).Debug("manifest list: selected platform image")
+
+					_, body, err = rc.ManifestRequest(ctx, name, tag, 2, manifestReqType)
+				}
 			}
 		} else {
 			v2SchemaError = fmt.Errorf("error when requesting v2 manifest, will try v1: %s", err.Error())
@@ -224,8 +286,18 @@ func (rc *RegClient) GetImageInfo(ctx context.Context, name, tag string, manifes
 				v2SchemaError = fmt.Errorf("could not build v2 image info, will try v1: %s", err.Error())
 				log.WithFields(log.Fields{"error": err, "schema": parsedSchemaVersion}).Debug("Failed to get manifest schema v2")
 			}
-			if cfgMediaType != registry.MediaTypeContainerImage && cfgMediaType != registry.MediaTypeOCIImageConfig && cfgMediaType != "" {
-				log.WithFields(log.Fields{"mediaType": cfgMediaType}).Info("Not an OCI image")
+
+			// Check if this is a container image we can scan
+			isContainerImage := (cfgMediaType == registry.MediaTypeContainerImage ||
+				cfgMediaType == registry.MediaTypeOCIImageConfig ||
+				cfgMediaType == "")
+
+			if !isContainerImage {
+				log.WithFields(log.Fields{
+					"mediaType": cfgMediaType,
+					"name":      name,
+					"tag":       tag,
+				}).Info("Skipping non-image artifact (Helm chart, signature, attestation, or SBOM)")
 				return imageInfo, share.ScanErrorCode_ScanErrImageNotFound
 			}
 		}
